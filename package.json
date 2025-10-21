@@ -1,0 +1,32 @@
+{
+  "name": "online-wiki-database",
+  "version": "1.0.0",
+  "description": "Online Wiki Database System for CSC4103 Semester Project",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "setup": "npm run build && node dist/database/seed-data.js",
+    "test-queries": "npm run build && node dist/queries/run-queries.js",
+    "user-management": "npm run build && node dist/interfaces/user-management.js",
+    "article-editor": "npm run build && node dist/interfaces/article-editor.js",
+    "article-browser": "npm run build && node dist/interfaces/article-browser.js",
+    "category-manager": "npm run build && node dist/interfaces/category-manager.js",
+    "admin-dashboard": "npm run build && node dist/interfaces/admin-dashboard.js"
+  },
+  "keywords": ["wiki", "database", "sqlite", "typescript"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "prompts": "^2.4.2",
+    "@faker-js/faker": "^8.4.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/prompts": "^2.4.9",
+    "@types/node": "^20.12.7",
+    "typescript": "^5.4.5"
+  }
+}
+
