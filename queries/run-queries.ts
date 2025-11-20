@@ -1,99 +1,88 @@
-// Script to Execute Test Queries
-import { getDatabase } from '../src/db-connection.js';
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { closeDb, getDb } from '../src/db-connection';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const db = getDb();
 
-// Point to project root directory
-const PROJECT_ROOT = join(__dirname, '..', '..');
+const QUERY_SET = [
+  {
+    title: 'Articles grouped by category with author information',
+    sql: `SELECT c.name AS category,
+                 a.title,
+                 u.display_name AS author,
+                 CASE a.published WHEN 1 THEN 'yes' ELSE 'no' END AS published,
+                 a.created_at
+          FROM articles a
+          JOIN users u ON u.id = a.author_id
+          JOIN article_categories ac ON ac.article_id = a.id
+          JOIN categories c ON c.id = ac.category_id
+          ORDER BY c.name, a.created_at DESC;`
+  },
+  {
+    title: 'Article overview with comment counts',
+    sql: `SELECT a.title,
+                 u.display_name AS author,
+                 a.created_at,
+                 a.updated_at,
+                 COUNT(c.id) AS comment_count
+          FROM articles a
+          JOIN users u ON u.id = a.author_id
+          LEFT JOIN comments c ON c.article_id = a.id
+          GROUP BY a.id
+          ORDER BY comment_count DESC, a.updated_at DESC;`
+  },
+  {
+    title: 'Most active contributors',
+    sql: `SELECT u.display_name,
+                 r.role,
+                 COUNT(a.id) AS articles_written
+          FROM users u
+          LEFT JOIN user_roles r ON r.user_id = u.id
+          LEFT JOIN articles a ON a.author_id = u.id
+          GROUP BY u.id
+          ORDER BY articles_written DESC
+          LIMIT 5;`
+  },
+  {
+    title: 'Recently commented articles',
+    sql: `SELECT a.title,
+                 u.display_name AS commenter,
+                 c.body,
+                 c.created_at
+          FROM comments c
+          JOIN users u ON u.id = c.author_id
+          JOIN articles a ON a.id = c.article_id
+          ORDER BY c.created_at DESC
+          LIMIT 5;`
+  },
+  {
+    title: 'Category coverage report',
+    sql: `SELECT c.name AS category,
+                 COUNT(ac.article_id) AS total_articles,
+                 ROUND(100.0 * COUNT(ac.article_id) / (SELECT COUNT(*) FROM articles), 2) AS pct_of_articles
+          FROM categories c
+          LEFT JOIN article_categories ac ON ac.category_id = c.id
+          GROUP BY c.id
+          ORDER BY total_articles DESC;`
+  }
+];
 
-function runTestQueries(): void {
-    console.log('=== Running Test Queries for Online Wiki Database ===\n');
-    
-    const db = getDatabase();
-    const queriesPath = join(PROJECT_ROOT, 'queries', 'test-queries.sql');
-    const sqlContent = readFileSync(queriesPath, 'utf-8');
-    
-    // Split queries by the comment headers
-    const queries = sqlContent.split(/-- Query \d+:/).slice(1);
-    
-    queries.forEach((queryBlock: string, index: number) => {
-        const lines = queryBlock.trim().split('\n');
-        const description = lines[0].trim();
-        
-        // Extract the actual SQL query (skip all comment lines, get first SQL statement)
-        const sqlLines: string[] = [];
-        let foundSelect = false;
-        for (const line of lines) {
-            const trimmed = line.trim();
-            // Skip comment-only lines
-            if (trimmed.startsWith('--')) continue;
-            // Start collecting once we hit SELECT
-            if (!foundSelect && trimmed.toUpperCase().startsWith('SELECT')) {
-                foundSelect = true;
-            }
-            if (foundSelect) {
-                sqlLines.push(line);
-            }
-        }
-        
-        const query = sqlLines.join('\n').trim();
-        
-        console.log(`\n${'='.repeat(80)}`);
-        console.log(`Query ${index + 1}: ${description}`);
-        console.log(`${'='.repeat(80)}\n`);
-        
-        try {
-            const startTime = Date.now();
-            const results = db.prepare(query).all();
-            const endTime = Date.now();
-            
-            console.log(`Execution time: ${endTime - startTime}ms`);
-            console.log(`Results found: ${results.length}\n`);
-            
-            if (results.length > 0) {
-                // Display results in a formatted table
-                const keys = Object.keys(results[0] as Record<string, any>);
-                
-                // Print header
-                console.log(keys.join(' | '));
-                console.log('-'.repeat(keys.join(' | ').length));
-                
-                // Print rows (limit to first 10 for readability)
-                const displayLimit = Math.min(results.length, 10);
-                for (let i = 0; i < displayLimit; i++) {
-                    const row = results[i] as Record<string, any>;
-                    const values = keys.map(key => {
-                        const value = row[key];
-                        if (value === null) return 'NULL';
-                        if (typeof value === 'string' && value.length > 50) {
-                            return value.substring(0, 47) + '...';
-                        }
-                        return String(value);
-                    });
-                    console.log(values.join(' | '));
-                }
-                
-                if (results.length > displayLimit) {
-                    console.log(`\n... and ${results.length - displayLimit} more rows`);
-                }
-            } else {
-                console.log('No results found.');
-            }
-            
-        } catch (error) {
-            console.error(`Error executing query: ${error}`);
-        }
-    });
-    
-    console.log(`\n${'='.repeat(80)}`);
-    console.log('All test queries completed!');
-    console.log(`${'='.repeat(80)}\n`);
-}
+const formatRow = (row: Record<string, unknown>): string =>
+  Object.entries(row)
+    .map(([key, value]) => `${key}=${value ?? 'null'}`)
+    .join(', ');
 
-// Run the queries
-runTestQueries();
+const main = () => {
+  QUERY_SET.forEach((query, index) => {
+    console.log(`\nQuery ${index + 1}: ${query.title}`);
+    const rows = db.prepare(query.sql).all();
+    if (!rows.length) {
+      console.log('No rows returned.');
+    } else {
+      rows.forEach((row, rowIndex) => {
+        console.log(`${rowIndex}: ${formatRow(row as Record<string, unknown>)}`);
+      });
+    }
+  });
+};
 
+main();
+closeDb();

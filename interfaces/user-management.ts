@@ -1,223 +1,153 @@
-// User Management Interface
 import prompts from 'prompts';
-import { getDatabase } from '../src/db-connection.js';
-import type { User, UserRole } from '../src/types.js';
+import { closeDb, getDb } from '../src/db-connection';
+import { RoleType } from '../src/types';
 
-const db = getDatabase();
+const db = getDb();
 
-function listUsers(): void {
-    const users = db.prepare(`
-        SELECT u.user_id, u.username, u.email, ur.role_name, u.is_active, u.created_at
-        FROM users u
-        JOIN user_roles ur ON u.role_id = ur.role_id
-        ORDER BY u.user_id DESC
-        LIMIT 20
-    `).all() as Array<User & { role_name: string }>;
+const listUsers = () => {
+  const rows = db
+    .prepare(
+      `SELECT u.id, u.username, u.email, u.display_name, u.is_active, r.role
+       FROM users u
+       LEFT JOIN user_roles r ON r.user_id = u.id
+       ORDER BY u.join_date DESC`
+    )
+    .all();
 
-    console.log('\n=== Users List ===');
-    console.log('ID | Username | Email | Role | Active | Created At');
-    console.log('-'.repeat(80));
-    users.forEach(user => {
-        console.log(`${user.user_id} | ${user.username} | ${user.email} | ${user.role_name} | ${user.is_active ? 'Yes' : 'No'} | ${user.created_at}`);
-    });
-    console.log('');
-}
+  console.table(rows);
+};
 
-function getUserRoles(): UserRole[] {
-    return db.prepare('SELECT * FROM user_roles').all() as UserRole[];
-}
-
-async function createUser(): Promise<void> {
-    const roles = getUserRoles();
-    
-    console.log('\n=== Create New User ===');
-    const response = await prompts([
-        {
-            type: 'text',
-            name: 'username',
-            message: 'Username:',
-            validate: (value: string) => value.length >= 3 ? true : 'Username must be at least 3 characters'
-        },
-        {
-            type: 'text',
-            name: 'email',
-            message: 'Email:',
-            validate: (value: string) => value.includes('@') ? true : 'Must be a valid email'
-        },
-        {
-            type: 'password',
-            name: 'password',
-            message: 'Password:',
-            validate: (value: string) => value.length >= 6 ? true : 'Password must be at least 6 characters'
-        },
-        {
-            type: 'select',
-            name: 'role_id',
-            message: 'Select role:',
-            choices: roles.map(role => ({ title: `${role.role_name} - ${role.description}`, value: role.role_id }))
-        },
-        {
-            type: 'text',
-            name: 'bio',
-            message: 'Bio (optional):',
-            initial: ''
-        }
-    ]);
-
-    if (response.username && response.email && response.password) {
-        try {
-            // Simple hash simulation (in real app, use bcrypt)
-            const passwordHash = Buffer.from(response.password).toString('base64');
-            
-            const result = db.prepare(`
-                INSERT INTO users (username, email, password_hash, role_id, bio, created_at, is_active)
-                VALUES (?, ?, ?, ?, ?, datetime('now'), 1)
-            `).run(response.username, response.email, passwordHash, response.role_id, response.bio || null);
-
-            console.log(`\n✓ User created successfully! User ID: ${result.lastInsertRowid}`);
-        } catch (error: any) {
-            console.error(`\n✗ Error creating user: ${error.message}`);
-        }
+const createUser = async () => {
+  const answers = await prompts([
+    { name: 'username', message: 'Username', type: 'text' },
+    { name: 'email', message: 'Email', type: 'text' },
+    { name: 'display_name', message: 'Display name', type: 'text' },
+    { name: 'bio', message: 'Bio (optional)', type: 'text' },
+    {
+      name: 'role',
+      message: 'Role',
+      type: 'select',
+      choices: [
+        { title: 'Admin', value: 'admin' },
+        { title: 'Editor', value: 'editor' },
+        { title: 'Viewer', value: 'viewer' }
+      ]
     }
-}
+  ]);
 
-async function updateUser(): Promise<void> {
-    const response = await prompts({
-        type: 'number',
-        name: 'userId',
-        message: 'Enter user ID to update:'
-    });
+  if (!answers.username || !answers.email) {
+    console.log('User creation cancelled.');
+    return;
+  }
 
-    if (!response.userId) return;
+  const info = db
+    .prepare(
+      `INSERT INTO users (username, email, display_name, bio, is_active)
+       VALUES (@username, @email, @display_name, @bio, 1)`
+    )
+    .run(answers);
 
-    const user = db.prepare('SELECT * FROM users WHERE user_id = ?').get(response.userId) as User | undefined;
+  db.prepare(`INSERT INTO user_roles (user_id, role) VALUES (?, ?)`).run(info.lastInsertRowid, answers.role as RoleType);
+  console.log('User created with id', info.lastInsertRowid);
+};
 
-    if (!user) {
-        console.log('\n✗ User not found!');
-        return;
+const toggleUser = async () => {
+  const users = db.prepare('SELECT id, username, is_active FROM users').all();
+  if (!users.length) {
+    console.log('No users found.');
+    return;
+  }
+
+  const { userId } = await prompts({
+    name: 'userId',
+    message: 'Select user',
+    type: 'select',
+    choices: users.map((u: any) => ({ title: `${u.username} (${u.is_active ? 'active' : 'inactive'})`, value: u.id }))
+  });
+
+  if (!userId) return;
+
+  const current = db.prepare('SELECT is_active FROM users WHERE id = ?').get(userId) as { is_active: number };
+  const next = current.is_active ? 0 : 1;
+  db.prepare('UPDATE users SET is_active = ? WHERE id = ?').run(next, userId);
+  console.log('User state updated.');
+};
+
+const changeRole = async () => {
+  const users = db
+    .prepare(
+      `SELECT u.id, u.username, COALESCE(r.role, 'viewer') as role
+       FROM users u
+       LEFT JOIN user_roles r ON r.user_id = u.id`
+    )
+    .all();
+
+  if (!users.length) {
+    console.log('No users found.');
+    return;
+  }
+
+  const { userId, newRole } = await prompts([
+    {
+      name: 'userId',
+      message: 'Select user',
+      type: 'select',
+      choices: users.map((u: any) => ({ title: `${u.username} (${u.role})`, value: u.id }))
+    },
+    {
+      name: 'newRole',
+      message: 'Role',
+      type: 'select',
+      choices: [
+        { title: 'Admin', value: 'admin' },
+        { title: 'Editor', value: 'editor' },
+        { title: 'Viewer', value: 'viewer' }
+      ]
     }
+  ]);
 
-    console.log(`\nUpdating user: ${user.username} (${user.email})`);
-    
-    const roles = getUserRoles();
-    const currentRole = roles.find(r => r.role_id === user.role_id);
+  if (!userId) return;
 
-    const updates = await prompts([
-        {
-            type: 'text',
-            name: 'email',
-            message: 'New email (leave empty to keep current):',
-            initial: user.email
-        },
-        {
-            type: 'select',
-            name: 'role_id',
-            message: 'Select role:',
-            initial: roles.findIndex(r => r.role_id === user.role_id),
-            choices: roles.map(role => ({ title: role.role_name, value: role.role_id }))
-        },
-        {
-            type: 'text',
-            name: 'bio',
-            message: 'Bio:',
-            initial: user.bio || ''
-        },
-        {
-            type: 'toggle',
-            name: 'is_active',
-            message: 'Is active?',
-            initial: Boolean(user.is_active),
-            active: 'yes',
-            inactive: 'no'
-        }
-    ]);
+  db.prepare(`INSERT INTO user_roles (user_id, role) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET role=excluded.role`).run(userId, newRole as RoleType);
+  console.log('Role updated.');
+};
 
-    try {
-        db.prepare(`
-            UPDATE users 
-            SET email = ?, role_id = ?, bio = ?, is_active = ?
-            WHERE user_id = ?
-        `).run(updates.email, updates.role_id, updates.bio || null, updates.is_active ? 1 : 0, response.userId);
-
-        console.log('\n✓ User updated successfully!');
-    } catch (error: any) {
-        console.error(`\n✗ Error updating user: ${error.message}`);
-    }
-}
-
-async function deleteUser(): Promise<void> {
-    const response = await prompts({
-        type: 'number',
-        name: 'userId',
-        message: 'Enter user ID to delete:'
+const main = async () => {
+  let exit = false;
+  while (!exit) {
+    const { action } = await prompts({
+      name: 'action',
+      type: 'select',
+      message: 'User management',
+      choices: [
+        { title: 'List users', value: 'list' },
+        { title: 'Create user', value: 'create' },
+        { title: 'Toggle active state', value: 'toggle' },
+        { title: 'Change role', value: 'role' },
+        { title: 'Exit', value: 'exit' }
+      ]
     });
 
-    if (!response.userId) return;
-
-    const user = db.prepare('SELECT username, email FROM users WHERE user_id = ?').get(response.userId) as { username: string, email: string } | undefined;
-
-    if (!user) {
-        console.log('\n✗ User not found!');
-        return;
+    switch (action) {
+      case 'list':
+        listUsers();
+        break;
+      case 'create':
+        await createUser();
+        break;
+      case 'toggle':
+        await toggleUser();
+        break;
+      case 'role':
+        await changeRole();
+        break;
+      default:
+        exit = true;
+        break;
     }
+  }
+};
 
-    const confirm = await prompts({
-        type: 'confirm',
-        name: 'value',
-        message: `Are you sure you want to delete user "${user.username}" (${user.email})? This will also delete all their articles, comments, and revisions.`,
-        initial: false
-    });
-
-    if (confirm.value) {
-        try {
-            db.prepare('DELETE FROM users WHERE user_id = ?').run(response.userId);
-            console.log('\n✓ User deleted successfully!');
-        } catch (error: any) {
-            console.error(`\n✗ Error deleting user: ${error.message}`);
-        }
-    }
-}
-
-async function main(): Promise<void> {
-    console.log('\n╔════════════════════════════════════════╗');
-    console.log('║   Online Wiki - User Management       ║');
-    console.log('╚════════════════════════════════════════╝\n');
-
-    let running = true;
-    while (running) {
-        const response = await prompts({
-            type: 'select',
-            name: 'action',
-            message: 'What would you like to do?',
-            choices: [
-                { title: 'List Users', value: 'list' },
-                { title: 'Create User', value: 'create' },
-                { title: 'Update User', value: 'update' },
-                { title: 'Delete User', value: 'delete' },
-                { title: 'Exit', value: 'exit' }
-            ]
-        });
-
-        switch (response.action) {
-            case 'list':
-                listUsers();
-                break;
-            case 'create':
-                await createUser();
-                break;
-            case 'update':
-                await updateUser();
-                break;
-            case 'delete':
-                await deleteUser();
-                break;
-            case 'exit':
-                running = false;
-                console.log('\nGoodbye!\n');
-                break;
-        }
-    }
-}
-
-main().catch(console.error);
-
+main()
+  .catch((err) => console.error(err))
+  .finally(() => closeDb());
