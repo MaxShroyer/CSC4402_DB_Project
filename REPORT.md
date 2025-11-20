@@ -3,8 +3,7 @@
 
 ## 1. Description of Enterprise (2 points)
 
-### Background
-The **Online Wiki Database System** is designed to support a collaborative knowledge-sharing platform similar to Wikipedia, where users can create, edit, and maintain articles on various topics. This enterprise serves educational institutions, organizations, or communities that need a structured system for documenting and sharing knowledge collaboratively.
+## 2. E-R Diagram (2 pts)
 
 ### Operation
 The wiki operates through several key functions:

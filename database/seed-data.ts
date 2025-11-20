@@ -1,8 +1,8 @@
 // Data Generation Script for Online Wiki Database
-import { faker } from '@faker-js/faker';
-import { getDatabase, initializeDatabase } from '../src/db-connection.js';
+import { faker } from '@faker-js/faker'; //faker for random data
+import { getDatabase, initializeDatabase } from '../src/db-connection.js'; //db-connection for database
 
-function generateSlug(title: string): string {
+function generateSlug(title: string): string { 
     return title
         .toLowerCase()
         .replace(/[^\w\s-]/g, '')
