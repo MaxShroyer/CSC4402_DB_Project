@@ -1,50 +1,32 @@
-// Database Connection Utility
 import Database from 'better-sqlite3';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { readFileSync } from 'fs';
+import path from 'path';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const ROOT_DIR = path.resolve(__dirname, '..', '..');
+const DB_PATH = path.resolve(ROOT_DIR, 'database/wiki.db');
 
-// Point to project root directory
-const PROJECT_ROOT = join(__dirname, '..', '..');
-const DB_PATH = join(PROJECT_ROOT, 'database', 'wiki.db');
+let connection: Database.Database | null = null;
 
-let db: Database.Database | null = null;
+export const getDb = (): Database.Database => {
+  if (!connection) {
+    connection = new Database(DB_PATH);
+    connection.pragma('foreign_keys = ON');
+  }
 
-export function getDatabase(): Database.Database {
-    if (!db) {
-        db = new Database(DB_PATH);
-        db.pragma('foreign_keys = ON');
-    }
-    return db;
-}
+  return connection;
+};
 
-export function initializeDatabase(): void {
-    const database = getDatabase();
-    const schemaPath = join(PROJECT_ROOT, 'database', 'schema.sql');
-    const schema = readFileSync(schemaPath, 'utf-8');
-    
-    // Split by semicolons and execute each statement
-    const statements = schema.split(';').filter(stmt => stmt.trim().length > 0);
-    
-    for (const statement of statements) {
-        try {
-            database.exec(statement);
-        } catch (error) {
-            console.error('Error executing statement:', statement);
-            throw error;
-        }
-    }
-    
-    console.log('Database initialized successfully!');
-}
+export const closeDb = (): void => {
+  if (connection) {
+    connection.close();
+    connection = null;
+  }
+};
 
-export function closeDatabase(): void {
-    if (db) {
-        db.close();
-        db = null;
-    }
-}
-
+export const withDb = <T>(fn: (db: Database.Database) => T): T => {
+  const db = getDb();
+  try {
+    return fn(db);
+  } finally {
+    // connection is reused globally; do not close here
+  }
+};

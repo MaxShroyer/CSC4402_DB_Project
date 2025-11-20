@@ -1,289 +1,156 @@
-// Category Manager Interface
 import prompts from 'prompts';
-import { getDatabase } from '../src/db-connection.js';
-import type { Category } from '../src/types.js';
+import { closeDb, getDb } from '../src/db-connection';
 
-const db = getDatabase();
+const db = getDb();
 
-function listCategories(): void {
-    const categories = db.prepare(`
-        SELECT c.category_id, c.category_name, c.description, 
-               pc.category_name as parent_category,
-               (SELECT COUNT(*) FROM article_categories WHERE category_id = c.category_id) as article_count
-        FROM categories c
-        LEFT JOIN categories pc ON c.parent_category_id = pc.category_id
-        ORDER BY c.category_name
-    `).all() as Array<Category & { parent_category: string | null, article_count: number }>;
+const listCategories = () => {
+  const rows = db
+    .prepare(
+      `SELECT c.id, c.name, COUNT(ac.article_id) AS articles
+       FROM categories c
+       LEFT JOIN article_categories ac ON ac.category_id = c.id
+       GROUP BY c.id
+       ORDER BY c.name`
+    )
+    .all();
+  console.table(rows);
+};
 
-    console.log('\n=== Categories ===');
-    console.log('ID | Name | Parent | Articles | Description');
-    console.log('-'.repeat(100));
-    categories.forEach(cat => {
-        const desc = cat.description ? cat.description.substring(0, 40) : '';
-        console.log(`${cat.category_id} | ${cat.category_name} | ${cat.parent_category || 'None'} | ${cat.article_count} | ${desc}`);
-    });
-    console.log('');
-}
+const createCategory = async () => {
+  const answers = await prompts([
+    { name: 'name', type: 'text', message: 'Category name' },
+    { name: 'description', type: 'text', message: 'Description' }
+  ]);
 
-async function createCategory(): Promise<void> {
-    console.log('\n=== Create New Category ===');
-    
-    const categories = db.prepare('SELECT category_id, category_name FROM categories ORDER BY category_name').all() as Array<{ category_id: number, category_name: string }>;
-    
-    const response = await prompts([
-        {
-            type: 'text',
-            name: 'name',
-            message: 'Category name:',
-            validate: (value: string) => value.length >= 3 ? true : 'Name must be at least 3 characters'
-        },
-        {
-            type: 'text',
-            name: 'description',
-            message: 'Description (optional):',
-            initial: ''
-        },
-        {
-            type: 'select',
-            name: 'parentId',
-            message: 'Parent category (optional):',
-            choices: [
-                { title: 'None (Top-level category)', value: null },
-                ...categories.map(cat => ({ title: cat.category_name, value: cat.category_id }))
-            ]
-        }
-    ]);
+  if (!answers.name) {
+    console.log('Creation cancelled.');
+    return;
+  }
 
-    if (response.name) {
-        try {
-            const result = db.prepare(`
-                INSERT INTO categories (category_name, description, parent_category_id, created_at)
-                VALUES (?, ?, ?, datetime('now'))
-            `).run(response.name, response.description || null, response.parentId);
+  db.prepare('INSERT INTO categories (name, description) VALUES (?, ?)').run(answers.name, answers.description ?? null);
+  console.log('Category saved.');
+};
 
-            console.log(`\n✓ Category created successfully! Category ID: ${result.lastInsertRowid}`);
-        } catch (error: any) {
-            console.error(`\n✗ Error creating category: ${error.message}`);
-        }
+const assignCategory = async () => {
+  const articles = db.prepare('SELECT id, title FROM articles ORDER BY updated_at DESC LIMIT 25').all();
+  const categories = db.prepare('SELECT id, name FROM categories ORDER BY name').all();
+
+  if (!articles.length || !categories.length) {
+    console.log('Need both articles and categories.');
+    return;
+  }
+
+  const answers = await prompts([
+    {
+      name: 'articleId',
+      type: 'select',
+      message: 'Choose article',
+      choices: articles.map((a: any) => ({ title: a.title, value: a.id }))
+    },
+    {
+      name: 'categoryIds',
+      type: 'multiselect',
+      message: 'Select categories',
+      choices: categories.map((c: any) => ({ title: c.name, value: c.id })),
+      hint: 'Space to toggle, enter to submit'
     }
-}
+  ]);
 
-async function updateCategory(): Promise<void> {
-    const categories = db.prepare('SELECT category_id, category_name FROM categories ORDER BY category_name').all() as Array<{ category_id: number, category_name: string }>;
+  if (!answers.articleId || !answers.categoryIds?.length) {
+    console.log('No categories selected.');
+    return;
+  }
 
-    const selectResponse = await prompts({
-        type: 'select',
-        name: 'categoryId',
-        message: 'Select category to update:',
-        choices: categories.map(cat => ({ title: cat.category_name, value: cat.category_id }))
+  const stmt = db.prepare('INSERT OR IGNORE INTO article_categories (article_id, category_id) VALUES (?, ?)');
+  (answers.categoryIds as number[]).forEach((id) => stmt.run(answers.articleId, id));
+  console.log('Categories assigned.');
+};
+
+const removeCategory = async () => {
+  const articles = db
+    .prepare(
+      `SELECT a.id, a.title, COUNT(ac.category_id) AS categories
+       FROM articles a
+       LEFT JOIN article_categories ac ON ac.article_id = a.id
+       GROUP BY a.id
+       HAVING categories > 0
+       ORDER BY a.updated_at DESC`
+    )
+    .all();
+
+  if (!articles.length) {
+    console.log('No article has categories assigned.');
+    return;
+  }
+
+  const { articleId } = await prompts({
+    name: 'articleId',
+    type: 'select',
+    message: 'Select article',
+    choices: articles.map((a: any) => ({ title: `${a.title} (${a.categories})`, value: a.id }))
+  });
+
+  if (!articleId) return;
+
+  const categories = db
+    .prepare(
+      `SELECT c.id, c.name
+       FROM categories c
+       JOIN article_categories ac ON ac.category_id = c.id
+       WHERE ac.article_id = ?`
+    )
+    .all(articleId);
+
+  const { categoryIds } = await prompts({
+    name: 'categoryIds',
+    type: 'multiselect',
+    message: 'Remove which categories?',
+    choices: categories.map((c: any) => ({ title: c.name, value: c.id }))
+  });
+
+  if (!categoryIds?.length) return;
+
+  const stmt = db.prepare('DELETE FROM article_categories WHERE article_id = ? AND category_id = ?');
+  (categoryIds as number[]).forEach((id) => stmt.run(articleId, id));
+  console.log('Categories removed.');
+};
+
+const main = async () => {
+  let exit = false;
+  while (!exit) {
+    const { action } = await prompts({
+      name: 'action',
+      type: 'select',
+      message: 'Category manager',
+      choices: [
+        { title: 'List categories', value: 'list' },
+        { title: 'Create category', value: 'create' },
+        { title: 'Assign categories to article', value: 'assign' },
+        { title: 'Remove categories from article', value: 'remove' },
+        { title: 'Exit', value: 'exit' }
+      ]
     });
 
-    if (!selectResponse.categoryId) return;
-
-    const category = db.prepare('SELECT * FROM categories WHERE category_id = ?').get(selectResponse.categoryId) as Category;
-
-    console.log(`\nUpdating category: ${category.category_name}`);
-
-    const response = await prompts([
-        {
-            type: 'text',
-            name: 'name',
-            message: 'Category name:',
-            initial: category.category_name,
-            validate: (value: string) => value.length >= 3 ? true : 'Name must be at least 3 characters'
-        },
-        {
-            type: 'text',
-            name: 'description',
-            message: 'Description:',
-            initial: category.description || ''
-        },
-        {
-            type: 'select',
-            name: 'parentId',
-            message: 'Parent category:',
-            initial: category.parent_category_id ? categories.findIndex(c => c.category_id === category.parent_category_id) + 1 : 0,
-            choices: [
-                { title: 'None (Top-level category)', value: null },
-                ...categories.filter(c => c.category_id !== selectResponse.categoryId).map(cat => ({ 
-                    title: cat.category_name, 
-                    value: cat.category_id 
-                }))
-            ]
-        }
-    ]);
-
-    try {
-        db.prepare(`
-            UPDATE categories 
-            SET category_name = ?, description = ?, parent_category_id = ?
-            WHERE category_id = ?
-        `).run(response.name, response.description || null, response.parentId, selectResponse.categoryId);
-
-        console.log('\n✓ Category updated successfully!');
-    } catch (error: any) {
-        console.error(`\n✗ Error updating category: ${error.message}`);
+    switch (action) {
+      case 'list':
+        listCategories();
+        break;
+      case 'create':
+        await createCategory();
+        break;
+      case 'assign':
+        await assignCategory();
+        break;
+      case 'remove':
+        await removeCategory();
+        break;
+      default:
+        exit = true;
+        break;
     }
-}
+  }
+};
 
-async function deleteCategory(): Promise<void> {
-    const categories = db.prepare(`
-        SELECT c.category_id, c.category_name,
-               (SELECT COUNT(*) FROM article_categories WHERE category_id = c.category_id) as article_count
-        FROM categories c
-        ORDER BY c.category_name
-    `).all() as Array<{ category_id: number, category_name: string, article_count: number }>;
-
-    const selectResponse = await prompts({
-        type: 'select',
-        name: 'categoryId',
-        message: 'Select category to delete:',
-        choices: categories.map(cat => ({ 
-            title: `${cat.category_name} (${cat.article_count} articles)`, 
-            value: cat.category_id 
-        }))
-    });
-
-    if (!selectResponse.categoryId) return;
-
-    const category = categories.find(c => c.category_id === selectResponse.categoryId);
-
-    const confirm = await prompts({
-        type: 'confirm',
-        name: 'value',
-        message: `Are you sure you want to delete "${category?.category_name}"? This will remove the category from ${category?.article_count} articles.`,
-        initial: false
-    });
-
-    if (confirm.value) {
-        try {
-            db.prepare('DELETE FROM categories WHERE category_id = ?').run(selectResponse.categoryId);
-            console.log('\n✓ Category deleted successfully!');
-        } catch (error: any) {
-            console.error(`\n✗ Error deleting category: ${error.message}`);
-        }
-    }
-}
-
-async function manageArticleCategories(): Promise<void> {
-    console.log('\n=== Manage Article Categories ===');
-
-    const searchResponse = await prompts({
-        type: 'text',
-        name: 'search',
-        message: 'Search for article by title:'
-    });
-
-    if (!searchResponse.search) return;
-
-    const articles = db.prepare(`
-        SELECT article_id, title
-        FROM articles
-        WHERE title LIKE ?
-        ORDER BY updated_at DESC
-        LIMIT 20
-    `).all(`%${searchResponse.search}%`) as Array<{ article_id: number, title: string }>;
-
-    if (articles.length === 0) {
-        console.log('\n✗ No articles found.');
-        return;
-    }
-
-    const articleResponse = await prompts({
-        type: 'select',
-        name: 'articleId',
-        message: 'Select article:',
-        choices: articles.map(art => ({ title: art.title, value: art.article_id }))
-    });
-
-    if (!articleResponse.articleId) return;
-
-    // Get current categories
-    const currentCategories = db.prepare(`
-        SELECT c.category_id, c.category_name
-        FROM categories c
-        JOIN article_categories ac ON c.category_id = ac.category_id
-        WHERE ac.article_id = ?
-    `).all(articleResponse.articleId) as Array<{ category_id: number, category_name: string }>;
-
-    console.log(`\nCurrent categories: ${currentCategories.map(c => c.category_name).join(', ') || 'None'}`);
-
-    // Get all categories
-    const allCategories = db.prepare('SELECT category_id, category_name FROM categories ORDER BY category_name').all() as Array<{ category_id: number, category_name: string }>;
-
-    const categoryResponse = await prompts({
-        type: 'multiselect',
-        name: 'categories',
-        message: 'Select categories for this article (space to select, enter to confirm):',
-        choices: allCategories.map(cat => ({
-            title: cat.category_name,
-            value: cat.category_id,
-            selected: currentCategories.some(c => c.category_id === cat.category_id)
-        }))
-    });
-
-    if (categoryResponse.categories !== undefined) {
-        try {
-            // Remove all existing categories
-            db.prepare('DELETE FROM article_categories WHERE article_id = ?').run(articleResponse.articleId);
-
-            // Add new categories
-            const insertStmt = db.prepare('INSERT INTO article_categories (article_id, category_id) VALUES (?, ?)');
-            for (const categoryId of categoryResponse.categories) {
-                insertStmt.run(articleResponse.articleId, categoryId);
-            }
-
-            console.log(`\n✓ Article categories updated! (${categoryResponse.categories.length} categories assigned)`);
-        } catch (error: any) {
-            console.error(`\n✗ Error updating article categories: ${error.message}`);
-        }
-    }
-}
-
-async function main(): Promise<void> {
-    console.log('\n╔════════════════════════════════════════╗');
-    console.log('║   Online Wiki - Category Manager      ║');
-    console.log('╚════════════════════════════════════════╝\n');
-
-    let running = true;
-    while (running) {
-        const response = await prompts({
-            type: 'select',
-            name: 'action',
-            message: 'What would you like to do?',
-            choices: [
-                { title: 'List Categories', value: 'list' },
-                { title: 'Create Category', value: 'create' },
-                { title: 'Update Category', value: 'update' },
-                { title: 'Delete Category', value: 'delete' },
-                { title: 'Manage Article Categories', value: 'manage' },
-                { title: 'Exit', value: 'exit' }
-            ]
-        });
-
-        switch (response.action) {
-            case 'list':
-                listCategories();
-                break;
-            case 'create':
-                await createCategory();
-                break;
-            case 'update':
-                await updateCategory();
-                break;
-            case 'delete':
-                await deleteCategory();
-                break;
-            case 'manage':
-                await manageArticleCategories();
-                break;
-            case 'exit':
-                running = false;
-                console.log('\nGoodbye!\n');
-                break;
-        }
-    }
-}
-
-main().catch(console.error);
-
+main()
+  .catch((err) => console.error(err))
+  .finally(() => closeDb());
