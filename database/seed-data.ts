@@ -75,228 +75,93 @@ function seedDatabase(): void {
         'Mathematics', 'Biology', 'Physics', 'Chemistry', 'Computer Science'
     ];
 
-    const insertCategory = db.prepare(`
-        INSERT INTO categories (category_name, description, parent_category_id, created_at)
-        VALUES (?, ?, ?, ?)
-    `);
+const insertCategory = db.prepare(`
+  INSERT INTO categories (name, description, created_at)
+  VALUES (@name, @description, @created_at)
+`);
 
-    const categoryIds: number[] = [];
-    for (let i = 0; i < categoryNames.length; i++) {
-        const parentId = i > 5 ? faker.helpers.arrayElement(categoryIds.slice(0, 5)) : null;
-        const result = insertCategory.run(
-            categoryNames[i],
-            faker.lorem.sentence(),
-            parentId,
-            faker.date.past({ years: 1 }).toISOString()
-        );
-        categoryIds.push(result.lastInsertRowid as number);
-    }
+const insertArticle = db.prepare(`
+  INSERT INTO articles (title, slug, summary, content, published, created_at, updated_at, author_id)
+  VALUES (@title, @slug, @summary, @content, @published, @created_at, @updated_at, @author_id)
+`);
 
-    // 4. Insert Tags
-    console.log('Seeding tags...');
-    const insertTag = db.prepare(`
-        INSERT INTO tags (tag_name, description, created_at)
-        VALUES (?, ?, ?)
-    `);
+const insertArticleCategory = db.prepare(`
+  INSERT OR IGNORE INTO article_categories (article_id, category_id)
+  VALUES (@article_id, @category_id)
+`);
 
-    const tagIds: number[] = [];
-    const tagNames = faker.helpers.uniqueArray(() => faker.word.noun(), 30);
-    for (const tagName of tagNames) {
-        const result = insertTag.run(
-            tagName.toLowerCase(),
-            faker.lorem.sentence(),
-            faker.date.past({ years: 1 }).toISOString()
-        );
-        tagIds.push(result.lastInsertRowid as number);
-    }
+const insertComment = db.prepare(`
+  INSERT INTO comments (article_id, author_id, body, created_at)
+  VALUES (@article_id, @author_id, @body, @created_at)
+`);
 
-    // 5. Insert Articles
-    console.log('Seeding articles...');
-    const insertArticle = db.prepare(`
-        INSERT INTO articles (title, slug, author_id, created_at, updated_at, is_published, is_locked, view_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+const randomDate = () => faker.date.between({ from: '2023-01-01T00:00:00.000Z', to: new Date() }).toISOString();
 
-    const articleIds: number[] = [];
-    for (let i = 0; i < 120; i++) {
-        const title = faker.lorem.words(faker.number.int({ min: 2, max: 8 }));
-        const slug = generateSlug(title) + '-' + faker.string.alphanumeric(6);
-        const createdAt = faker.date.past({ years: 1 }).toISOString();
-        const updatedAt = faker.date.between({ from: createdAt, to: new Date().toISOString() }).toISOString();
-        
-        const result = insertArticle.run(
-            title,
-            slug,
-            faker.helpers.arrayElement(userIds),
-            createdAt,
-            updatedAt,
-            faker.datatype.boolean(0.9) ? 1 : 0,
-            faker.datatype.boolean(0.05) ? 1 : 0,
-            faker.number.int({ min: 0, max: 10000 })
-        );
-        articleIds.push(result.lastInsertRowid as number);
-    }
+const populate = db.transaction(() => {
+  for (let i = 0; i < USERS; i++) {
+    const joinDate = randomDate();
+    const info = insertUser.run({
+      username: `${faker.internet.userName().toLowerCase()}${randomInt(10, 9999)}`,
+      email: faker.internet.email().toLowerCase(),
+      display_name: faker.person.fullName(),
+      bio: faker.lorem.sentences(randomInt(1, 2)),
+      join_date: joinDate,
+      is_active: faker.datatype.boolean() ? 1 : 0
+    });
 
-    // 6. Insert Revisions (multiple per article)
-    console.log('Seeding revisions...');
-    const insertRevision = db.prepare(`
-        INSERT INTO revisions (article_id, editor_id, content, revision_comment, created_at, word_count)
-        VALUES (?, ?, ?, ?, ?, ?)
-    `);
+    insertRole.run({
+      user_id: info.lastInsertRowid,
+      role: roleOptions[randomInt(0, roleOptions.length - 1)],
+      assigned_at: joinDate
+    });
+  }
 
-    for (const articleId of articleIds) {
-        const numRevisions = faker.number.int({ min: 1, max: 8 });
-        const article = db.prepare('SELECT created_at FROM articles WHERE article_id = ?').get(articleId) as { created_at: string };
-        
-        for (let i = 0; i < numRevisions; i++) {
-            const content = faker.lorem.paragraphs(faker.number.int({ min: 3, max: 15 }));
-            const wordCount = generateWordCount(content);
-            const revisionDate = i === 0 
-                ? article.created_at 
-                : faker.date.between({ from: article.created_at, to: new Date().toISOString() }).toISOString();
-            
-            insertRevision.run(
-                articleId,
-                faker.helpers.arrayElement(userIds),
-                content,
-                i === 0 ? 'Initial version' : faker.lorem.sentence(),
-                revisionDate,
-                wordCount
-            );
-        }
-    }
+  for (let i = 0; i < CATEGORIES; i++) {
+    insertCategory.run({
+      name: faker.commerce.department().toLowerCase(),
+      description: faker.lorem.sentence(),
+      created_at: randomDate()
+    });
+  }
 
-    // 7. Insert Comments
-    console.log('Seeding comments...');
-    const insertComment = db.prepare(`
-        INSERT INTO comments (article_id, user_id, parent_comment_id, content, created_at, updated_at, is_deleted)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
+  const userIds = (db.prepare('SELECT id FROM users').all() as Array<{ id: number }>).map((row) => row.id);
+  const categoryIds = (db.prepare('SELECT id FROM categories').all() as Array<{ id: number }>).map((row) => row.id);
 
-    const commentIds: number[] = [];
-    for (let i = 0; i < 200; i++) {
-        const articleId = faker.helpers.arrayElement(articleIds);
-        const createdAt = faker.date.recent({ days: 180 }).toISOString();
-        const parentCommentId = commentIds.length > 0 && faker.datatype.boolean(0.3) 
-            ? faker.helpers.arrayElement(commentIds) 
-            : null;
-        
-        const result = insertComment.run(
-            articleId,
-            faker.helpers.arrayElement(userIds),
-            parentCommentId,
-            faker.lorem.sentences(faker.number.int({ min: 1, max: 4 })),
-            createdAt,
-            createdAt,
-            faker.datatype.boolean(0.05) ? 1 : 0
-        );
-        commentIds.push(result.lastInsertRowid as number);
-    }
+  for (let i = 0; i < ARTICLES; i++) {
+    const title = faker.lorem.words(randomInt(3, 7));
+    const slug = faker.helpers.slugify(`${title}-${faker.string.alphanumeric(4)}`).toLowerCase();
+    const createdAt = randomDate();
+    const updatedAt = faker.datatype.boolean() ? randomDate() : createdAt;
+    const authorId = faker.helpers.arrayElement(userIds);
 
-    // 8. Insert Article-Category Mappings
-    console.log('Seeding article-category mappings...');
-    const insertArticleCategory = db.prepare(`
-        INSERT OR IGNORE INTO article_categories (article_id, category_id)
-        VALUES (?, ?)
-    `);
+    const info = insertArticle.run({
+      title: title.replace(/(^\\w|\\s\\w)/g, (s) => s.toUpperCase()),
+      slug,
+      summary: faker.lorem.sentences(randomInt(2, 4)),
+      content: faker.lorem.paragraphs(randomInt(3, 5), '\\n\\n'),
+      published: faker.datatype.boolean() ? 1 : 0,
+      created_at: createdAt,
+      updated_at: updatedAt,
+      author_id: authorId
+    });
 
-    for (const articleId of articleIds) {
-        const numCategories = faker.number.int({ min: 1, max: 3 });
-        const selectedCategories = faker.helpers.arrayElements(categoryIds, numCategories);
-        for (const categoryId of selectedCategories) {
-            insertArticleCategory.run(articleId, categoryId);
-        }
-    }
+    const articleId = Number(info.lastInsertRowid);
+    const categorySample = faker.helpers.arrayElements(categoryIds, randomInt(1, 3));
+    categorySample.forEach((categoryId) => insertArticleCategory.run({ article_id: articleId, category_id: categoryId }));
+  }
 
-    // 9. Insert Article-Tag Mappings
-    console.log('Seeding article-tag mappings...');
-    const insertArticleTag = db.prepare(`
-        INSERT OR IGNORE INTO article_tags (article_id, tag_id)
-        VALUES (?, ?)
-    `);
+  const articleIds = (db.prepare('SELECT id FROM articles').all() as Array<{ id: number }>).map((row) => row.id);
 
-    for (const articleId of articleIds) {
-        const numTags = faker.number.int({ min: 2, max: 6 });
-        const selectedTags = faker.helpers.arrayElements(tagIds, numTags);
-        for (const tagId of selectedTags) {
-            insertArticleTag.run(articleId, tagId);
-        }
-    }
+  for (let i = 0; i < COMMENTS; i++) {
+    insertComment.run({
+      article_id: faker.helpers.arrayElement(articleIds),
+      author_id: faker.helpers.arrayElement(userIds),
+      body: faker.lorem.sentences(randomInt(1, 3)),
+      created_at: randomDate()
+    });
+  }
+});
 
-    // 10. Insert Page Links
-    console.log('Seeding page links...');
-    const insertPageLink = db.prepare(`
-        INSERT OR IGNORE INTO page_links (source_article_id, target_article_id, created_at)
-        VALUES (?, ?, ?)
-    `);
-
-    for (let i = 0; i < 250; i++) {
-        const sourceId = faker.helpers.arrayElement(articleIds);
-        let targetId = faker.helpers.arrayElement(articleIds);
-        
-        // Ensure source and target are different
-        while (targetId === sourceId) {
-            targetId = faker.helpers.arrayElement(articleIds);
-        }
-        
-        insertPageLink.run(sourceId, targetId, faker.date.recent({ days: 90 }).toISOString());
-    }
-
-    // 11. Insert Media
-    console.log('Seeding media...');
-    const insertMedia = db.prepare(`
-        INSERT INTO media (article_id, uploader_id, filename, file_type, file_size, file_path, alt_text, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const fileTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf'];
-    for (let i = 0; i < 180; i++) {
-        const fileType = faker.helpers.arrayElement(fileTypes);
-        const extension = fileType.split('/')[1];
-        const filename = faker.system.fileName() + '.' + extension;
-        
-        insertMedia.run(
-            faker.helpers.arrayElement(articleIds),
-            faker.helpers.arrayElement(userIds),
-            filename,
-            fileType,
-            faker.number.int({ min: 10000, max: 5000000 }),
-            '/uploads/' + faker.date.past().getFullYear() + '/' + filename,
-            faker.lorem.sentence(),
-            faker.date.past({ years: 1 }).toISOString()
-        );
-    }
-
-    // 12. Insert View Statistics
-    console.log('Seeding view statistics...');
-    const insertViewStat = db.prepare(`
-        INSERT INTO view_statistics (article_id, user_id, viewed_at, ip_address, user_agent)
-        VALUES (?, ?, ?, ?, ?)
-    `);
-
-    for (let i = 0; i < 5000; i++) {
-        insertViewStat.run(
-            faker.helpers.arrayElement(articleIds),
-            faker.datatype.boolean(0.7) ? faker.helpers.arrayElement(userIds) : null,
-            faker.date.recent({ days: 90 }).toISOString(),
-            faker.internet.ipv4(),
-            faker.internet.userAgent()
-        );
-    }
-
-    console.log('\n=== Database Seeding Complete ===');
-    console.log(`Users: 60`);
-    console.log(`Categories: ${categoryNames.length}`);
-    console.log(`Tags: 30`);
-    console.log(`Articles: 120`);
-    console.log(`Revisions: ~400-600`);
-    console.log(`Comments: 200`);
-    console.log(`Media: 180`);
-    console.log(`View Statistics: 5000`);
-    console.log(`Page Links: ~250`);
-    console.log('===================================\n');
-}
-
-// Run the seeding function
-seedDatabase();
-
+populate();
+console.log('Database seeded at', dbPath);
+db.close();

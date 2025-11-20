@@ -1,170 +1,68 @@
--- Online Wiki Database Schema
--- CSC4103 Semester Project
-
--- Enable foreign key constraints
 PRAGMA foreign_keys = ON;
 
--- User Roles Table
-CREATE TABLE IF NOT EXISTS user_roles (
-    role_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    role_name TEXT NOT NULL UNIQUE,
-    can_create_articles BOOLEAN DEFAULT 0,
-    can_edit_articles BOOLEAN DEFAULT 0,
-    can_delete_articles BOOLEAN DEFAULT 0,
-    can_moderate BOOLEAN DEFAULT 0,
-    can_admin BOOLEAN DEFAULT 0,
-    description TEXT
-);
+DROP TABLE IF EXISTS comments;
+DROP TABLE IF EXISTS article_categories;
+DROP TABLE IF EXISTS articles;
+DROP TABLE IF EXISTS categories;
+DROP TABLE IF EXISTS user_roles;
+DROP TABLE IF EXISTS users;
 
--- Users Table
 CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE,
-    email TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    role_id INTEGER NOT NULL,
-    bio TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_login TIMESTAMP,
-    is_active BOOLEAN DEFAULT 1,
-    FOREIGN KEY (role_id) REFERENCES user_roles(role_id) ON DELETE RESTRICT
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL UNIQUE,
+  email TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  bio TEXT,
+  join_date TEXT NOT NULL DEFAULT (datetime('now')),
+  is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
 );
 
--- Categories Table
+CREATE TABLE IF NOT EXISTS user_roles (
+  user_id INTEGER PRIMARY KEY,
+  role TEXT NOT NULL CHECK (role IN ('admin', 'editor', 'viewer')),
+  assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS categories (
-    category_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    category_name TEXT NOT NULL UNIQUE,
-    description TEXT,
-    parent_category_id INTEGER,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (parent_category_id) REFERENCES categories(category_id) ON DELETE SET NULL
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Articles Table
 CREATE TABLE IF NOT EXISTS articles (
-    article_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    slug TEXT NOT NULL UNIQUE,
-    author_id INTEGER NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    is_published BOOLEAN DEFAULT 1,
-    is_locked BOOLEAN DEFAULT 0,
-    view_count INTEGER DEFAULT 0,
-    FOREIGN KEY (author_id) REFERENCES users(user_id) ON DELETE CASCADE
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  slug TEXT NOT NULL UNIQUE,
+  summary TEXT,
+  content TEXT NOT NULL,
+  published INTEGER NOT NULL DEFAULT 0 CHECK (published IN (0, 1)),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT,
+  author_id INTEGER NOT NULL,
+  FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- Revisions Table (Edit History)
-CREATE TABLE IF NOT EXISTS revisions (
-    revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    article_id INTEGER NOT NULL,
-    editor_id INTEGER NOT NULL,
-    content TEXT NOT NULL,
-    revision_comment TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    word_count INTEGER DEFAULT 0,
-    FOREIGN KEY (article_id) REFERENCES articles(article_id) ON DELETE CASCADE,
-    FOREIGN KEY (editor_id) REFERENCES users(user_id) ON DELETE CASCADE
-);
-
--- Comments Table
-CREATE TABLE IF NOT EXISTS comments (
-    comment_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    article_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL,
-    parent_comment_id INTEGER,
-    content TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    is_deleted BOOLEAN DEFAULT 0,
-    FOREIGN KEY (article_id) REFERENCES articles(article_id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
-    FOREIGN KEY (parent_comment_id) REFERENCES comments(comment_id) ON DELETE CASCADE
-);
-
--- Tags Table
-CREATE TABLE IF NOT EXISTS tags (
-    tag_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    tag_name TEXT NOT NULL UNIQUE,
-    description TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Article-Category Mapping (Many-to-Many)
 CREATE TABLE IF NOT EXISTS article_categories (
-    article_id INTEGER NOT NULL,
-    category_id INTEGER NOT NULL,
-    PRIMARY KEY (article_id, category_id),
-    FOREIGN KEY (article_id) REFERENCES articles(article_id) ON DELETE CASCADE,
-    FOREIGN KEY (category_id) REFERENCES categories(category_id) ON DELETE CASCADE
+  article_id INTEGER NOT NULL,
+  category_id INTEGER NOT NULL,
+  PRIMARY KEY (article_id, category_id),
+  FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
+  FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
 );
 
--- Article-Tag Mapping (Many-to-Many)
-CREATE TABLE IF NOT EXISTS article_tags (
-    article_id INTEGER NOT NULL,
-    tag_id INTEGER NOT NULL,
-    PRIMARY KEY (article_id, tag_id),
-    FOREIGN KEY (article_id) REFERENCES articles(article_id) ON DELETE CASCADE,
-    FOREIGN KEY (tag_id) REFERENCES tags(tag_id) ON DELETE CASCADE
+CREATE TABLE IF NOT EXISTS comments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  article_id INTEGER NOT NULL,
+  author_id INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
+  FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- Page Links Table (Self-referencing Many-to-Many for inter-article links)
-CREATE TABLE IF NOT EXISTS page_links (
-    source_article_id INTEGER NOT NULL,
-    target_article_id INTEGER NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (source_article_id, target_article_id),
-    FOREIGN KEY (source_article_id) REFERENCES articles(article_id) ON DELETE CASCADE,
-    FOREIGN KEY (target_article_id) REFERENCES articles(article_id) ON DELETE CASCADE,
-    CHECK (source_article_id != target_article_id)
-);
-
--- Media Table (Attachments/Images)
-CREATE TABLE IF NOT EXISTS media (
-    media_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    article_id INTEGER NOT NULL,
-    uploader_id INTEGER NOT NULL,
-    filename TEXT NOT NULL,
-    file_type TEXT NOT NULL,
-    file_size INTEGER NOT NULL,
-    file_path TEXT NOT NULL,
-    alt_text TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (article_id) REFERENCES articles(article_id) ON DELETE CASCADE,
-    FOREIGN KEY (uploader_id) REFERENCES users(user_id) ON DELETE CASCADE
-);
-
--- View Statistics Table
-CREATE TABLE IF NOT EXISTS view_statistics (
-    stat_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    article_id INTEGER NOT NULL,
-    user_id INTEGER,
-    viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    ip_address TEXT,
-    user_agent TEXT,
-    FOREIGN KEY (article_id) REFERENCES articles(article_id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE SET NULL
-);
-
--- Indexes for Performance
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
-CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-CREATE INDEX IF NOT EXISTS idx_users_role ON users(role_id);
-CREATE INDEX IF NOT EXISTS idx_articles_author ON articles(author_id);
 CREATE INDEX IF NOT EXISTS idx_articles_slug ON articles(slug);
-CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(is_published);
-CREATE INDEX IF NOT EXISTS idx_revisions_article ON revisions(article_id);
-CREATE INDEX IF NOT EXISTS idx_revisions_editor ON revisions(editor_id);
+CREATE INDEX IF NOT EXISTS idx_article_categories_category ON article_categories(category_id);
 CREATE INDEX IF NOT EXISTS idx_comments_article ON comments(article_id);
-CREATE INDEX IF NOT EXISTS idx_comments_user ON comments(user_id);
-CREATE INDEX IF NOT EXISTS idx_view_stats_article ON view_statistics(article_id);
-CREATE INDEX IF NOT EXISTS idx_view_stats_date ON view_statistics(viewed_at);
-
--- Full-text search virtual table for articles
-CREATE VIRTUAL TABLE IF NOT EXISTS articles_fts USING fts5(
-    title,
-    content,
-    content='',
-    content_rowid='article_id'
-);
-
