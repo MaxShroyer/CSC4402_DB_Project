@@ -15,6 +15,12 @@ npm install
    ```
    see the populated file at `database/wiki.db`.
 
+   **If `npm run seed:dev` fails with module resolution errors**, use the regular seed command instead:
+   ```bash
+   npm run seed
+   ```
+   This compiles TypeScript first, which resolves better on Windows.
+
 ## Running the Test Queries
 ```bash
 npm run run:queries
